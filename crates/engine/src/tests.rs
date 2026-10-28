@@ -3316,6 +3316,24 @@ fn border_sides_apply_exactly() {
     assert!(s.doc.last_section.page_borders.is_none());
 }
 
+/// A file opened by a relative path keeps its absolute path, so Save and File › Recent still
+/// find it once the app runs from another folder (a relative Recent entry opened nothing).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn opening_a_relative_path_remembers_the_absolute_one() {
+    let name = format!("wordcraft-relative-open-{}.txt", std::process::id());
+    std::fs::write(&name, "Relative hello").unwrap();
+    let mut a = s();
+    let r = a.run("file.open", &json!({"path": name}));
+    let path = a.path.clone();
+    let _ = std::fs::remove_file(&name);
+    r.unwrap();
+    let path = path.unwrap();
+    assert!(path.is_absolute(), "{path:?}");
+    assert_eq!(path, std::env::current_dir().unwrap().join(&name));
+    assert!(a.doc.plain_text(StoryRef::Body).contains("Relative hello"));
+}
+
 /// Encrypt with Password (#55): a document saved with a password opens only with it, keeps it
 /// for the next save, and saves unencrypted once the password is removed.
 #[cfg(not(target_arch = "wasm32"))]

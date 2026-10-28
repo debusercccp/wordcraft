@@ -356,6 +356,9 @@ pub struct WordApp {
     /// The Restrict Editing pane (#412).
     pub restrict: dialogs_review::RestrictPane,
     pub status_msg: Option<(String, f64)>,
+    /// Why the last Recent document clicked on File › Home or Open didn't open; shown above the
+    /// list, where the status bar isn't.
+    pub(crate) recent_error: Option<String>,
     pub previews: previews::Previews,
     /// Media key of the picture a pending Change Picture replaces (#147).
     pub change_picture_target: Option<String>,
@@ -474,6 +477,7 @@ impl WordApp {
             colors: None,
             restrict: Default::default(),
             status_msg: None,
+            recent_error: None,
             previews: previews::Previews::default(),
             integrated_titlebar: false,
             control_rx: None,

@@ -256,6 +256,10 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
     if app.ui.recent.is_empty() {
         ui.label(egui::RichText::new(tl!("Documents you open will show up here.")).color(t.text_dim));
     }
+    if let Some(e) = &app.recent_error {
+        ui.label(egui::RichText::new(e).color(t.red));
+        ui.add_space(4.0);
+    }
     for p in app.ui.recent.iter().take(app.ui.recent_shown()).cloned().collect::<Vec<_>>() {
         let name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p.clone());
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 40.0), Sense::click());
@@ -266,9 +270,24 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
         ui.painter().text(pos2(r.min.x + 40.0, r.min.y + 13.0), Align2::LEFT_CENTER, &name, medium(13.0), t.text);
         ui.painter().text(pos2(r.min.x + 40.0, r.min.y + 29.0), Align2::LEFT_CENTER, &p, regular(11.0), t.text_dim);
         if resp.clicked() {
-            let _ = app.run("file.open", json!({"path": p}));
+            open_recent(app, &p);
+        }
+    }
+}
+
+/// Open a Recent document. If it doesn't open, stay on the list and say why, instead of leaving
+/// for the blank document as if it had (a moved file, or a relative path from another folder).
+fn open_recent(app: &mut WordApp, p: &str) {
+    match app.run("file.open", json!({"path": p})) {
+        Ok(_) => {
+            app.recent_error = None;
             app.ui.backstage = false;
             app.canvas.want_focus = true;
+        }
+        Err(e) => {
+            log::warn!("{p}: {e}");
+            let msg = tl!("Couldn't open {path}: {error}");
+            app.recent_error = Some(crate::i18n::fmt(msg, &[("path", p), ("error", &e)]));
         }
     }
 }
@@ -492,6 +511,41 @@ mod tests {
         assert_eq!((a.session.doc.core.title.as_str(), a.session.doc.core.creator.as_str()), ("ALPHA", ""));
         a.session.run("edit.undo", &json!({})).unwrap();
         assert_eq!(a.session.doc.core.title, "");
+    }
+
+    /// A Recent document that doesn't open (moved, or a relative path from another folder) keeps
+    /// File › Home up with the reason, instead of leaving for an empty Document1.
+    #[test]
+    fn recent_that_does_not_open_stays_on_the_list_and_says_why() {
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+        assert!(a.start_screen());
+        let missing = "no/such/folder/Notes.docx";
+        a.ui.recent = vec![missing.to_string()];
+        super::open_recent(&mut a, missing);
+        assert!(a.ui.backstage, "still on File › Home");
+        let err = a.recent_error.clone().unwrap();
+        assert!(err.contains(missing), "{err}");
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        h.run_steps(4);
+        assert!(h.query_by_label(&err).is_some(), "the reason shows above the list");
+
+        // One that opens leaves for the editor and clears the message.
+        let path = std::env::temp_dir().join(format!("wordcraft-ui-recent-{}.docx", std::process::id()));
+        let a = h.state_mut();
+        a.run("file.new", json!({"template": "sample"})).unwrap();
+        a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
+        a.run("ui.backstage", json!({"value": true, "page": "open"})).unwrap();
+        super::open_recent(a, &path.to_string_lossy());
+        assert!(!a.ui.backstage && a.recent_error.is_none());
+        assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Studio"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
