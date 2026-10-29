@@ -241,18 +241,23 @@ impl WordApp {
         // for the one it showed is put aside.
         if self.session.document_id() != document {
             // A file opened by any route (Browse, the built-in browser, Recent, an agent) clears
-            // the stale "Couldn't open" under the Recent list.
-            if id == "file.open" {
+            // the stale "Couldn't open" under the Recent list, in the window that asked and in
+            // the one that shows the file. A Recent open is finished in the window it was
+            // clicked in, before the switch puts that window's state aside.
+            let recent = id == "file.open" && {
                 self.recent_error = None;
-                backstage::recent_opened(self);
-            }
+                backstage::recent_opened(self)
+            };
             // A requested New/Open wins over the asynchronous startup recovery scan.
             // Older copies remain available through File > Recover.
             self.recovery_seen = true;
             self.sync_document();
-            // The file may be shown in another window: its message is stale too.
             if id == "file.open" {
                 self.recent_error = None;
+            }
+            if recent {
+                self.ui.backstage = false;
+                self.canvas.want_focus = true;
             }
         }
         // An explicit save to the document's own file lets AutoSave keep writing there.

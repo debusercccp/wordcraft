@@ -6355,24 +6355,49 @@ fn border_sides_apply_exactly() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn opening_a_relative_path_remembers_the_absolute_one() {
-    let name = format!("wordcraft-relative-open-{}.txt", std::process::id());
-    std::fs::write(&name, "Relative hello").unwrap();
+    let dir = std::env::temp_dir().join(format!("wordcraft-relative-open-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("note.txt");
+    std::fs::write(&file, "Relative hello").unwrap();
+    // A relative path to the temporary folder: nothing is written where the tests run.
+    let rel = relative_from_cwd(&file);
+    assert!(rel.is_relative(), "{rel:?}");
+    let rel = rel.to_string_lossy().to_string();
     let mut a = s();
-    let r = a.run("file.open", &json!({"path": name}));
-    let path = a.path.clone();
-    let _ = std::fs::remove_file(&name);
-    r.unwrap();
-    let path = path.unwrap();
+    let r = a.run("file.open", &json!({"path": rel})).unwrap();
+    let path = a.path.clone().unwrap();
     assert!(path.is_absolute(), "{path:?}");
-    assert_eq!(path, std::env::current_dir().unwrap().join(&name));
+    assert_eq!(path, std::env::current_dir().unwrap().join(&rel));
+    assert_eq!(r["path"].as_str().map(std::path::Path::new), Some(path.as_path()), "the result names the remembered path");
     assert!(a.doc.plain_text(StoryRef::Body).contains("Relative hello"));
-    // `"data": null` sends no bytes: the file is read from disk, so its path is absolute too.
-    std::fs::write(&name, "Relative hello").unwrap();
-    let r = a.run("file.open", &json!({"path": name, "data": null}));
-    let path = a.path.clone();
-    let _ = std::fs::remove_file(&name);
-    r.unwrap();
-    assert!(path.is_some_and(|p| p.is_absolute()));
+
+    // Saved back by the same relative name it is the document's own file (#2376): saved, and
+    // the path stays absolute.
+    a.run("text.insert", &json!({"text": "More. "})).unwrap();
+    let r = a.run("file.save", &json!({"path": rel})).unwrap();
+    assert!(!a.dirty, "a save over its own file is a save");
+    assert_eq!(a.path.as_deref(), Some(path.as_path()));
+    assert_eq!(r["path"].as_str().map(std::path::Path::new), Some(path.as_path()));
+
+    // So is a Save As to a relative path, and `"data": null` (no bytes: read from disk).
+    let copy = relative_from_cwd(&dir.join("copy.docx")).to_string_lossy().to_string();
+    a.run("file.saveAs", &json!({"path": copy})).unwrap();
+    assert!(a.path.as_deref().is_some_and(std::path::Path::is_absolute), "{:?}", a.path);
+    let mut b = s();
+    b.run("file.open", &json!({"path": rel, "data": null})).unwrap();
+    assert!(b.path.is_some_and(|p| p.is_absolute()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `target` as a path relative to the working directory, by going up to the root and down.
+#[cfg(not(target_arch = "wasm32"))]
+fn relative_from_cwd(target: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let cwd = std::env::current_dir().unwrap();
+    let up = cwd.components().filter(|c| matches!(c, Component::Normal(_))).count();
+    let mut rel: std::path::PathBuf = std::iter::repeat_n("..", up).collect();
+    rel.extend(target.components().filter(|c| matches!(c, Component::Normal(_))));
+    rel
 }
 
 /// Encrypt with Password (#55): a document saved with a password opens only with it, keeps it

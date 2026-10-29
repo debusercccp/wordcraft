@@ -202,8 +202,64 @@ fn recent_open_with_a_wrong_password_is_still_pending() {
     assert!(wordcraft_engine::io::wrong_password(&e), "{e}");
     assert!(a.pending_recent.is_some() && a.recent_error.is_none(), "a wrong password is not a failed open");
     assert!(a.ui.backstage);
+    a.canvas.want_focus = false;
     a.execute("file.open", json!({"path": path, "password": "sesame"})).unwrap();
     assert!(!a.ui.backstage && a.pending_recent.is_none() && a.recent_error.is_none(), "it opened");
+    assert!(a.canvas.want_focus, "the editor takes the keyboard once the document shows");
+
+    // Cancelling the prompt ends the pending open without a message.
+    a.pending_recent = Some((path.clone(), path.clone()));
+    crate::backstage::recent_cancelled(&mut a, Some("/elsewhere.docx"));
+    assert!(a.pending_recent.is_some(), "another file's prompt leaves it alone");
+    crate::backstage::recent_cancelled(&mut a, Some(&path));
+    assert!(a.pending_recent.is_none() && a.recent_error.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A legacy relative entry for the document already shown opens nothing new, but File closes
+/// and the relative spelling leaves the list, keeping the absolute one.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn relative_entry_for_the_shown_document_is_dropped() {
+    let home = std::env::temp_dir().join(format!("wordcraft-ui-home-shown-{}", std::process::id()));
+    std::fs::create_dir_all(home.join("Docs")).unwrap();
+    let abs = home.join("Docs").join("Notes.docx").to_string_lossy().to_string();
+    let rel = "Docs/Notes.docx";
+    let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("Shown")), Services::default());
+    a.run("file.save", json!({"path": abs})).unwrap();
+    a.ui.recent = vec![abs.clone(), rel.into()];
+    a.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+    super::open_recent_from(&mut a, rel, Some(&home)).unwrap();
+    assert!(!a.ui.backstage && a.pending_recent.is_none());
+    assert_eq!(a.ui.recent, vec![abs.clone()]);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A relative entry is looked for in the home folder before the folder the app runs from.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn relative_entries_prefer_the_home_folder() {
+    let home = std::env::temp_dir().join(format!("wordcraft-ui-home-first-{}", std::process::id()));
+    std::fs::create_dir_all(home.join("src")).unwrap();
+    // `src/lib.rs` exists where the tests run (the crate folder) and in this home.
+    std::fs::write(home.join("src").join("lib.rs"), "home").unwrap();
+    assert!(std::path::Path::new("src/lib.rs").exists());
+    assert_eq!(super::resolve_recent("src/lib.rs", Some(&home)), home.join("src").join("lib.rs").to_string_lossy());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Paths through `..` or a link name the same file.
+#[test]
+#[cfg(unix)]
+fn same_file_sees_through_dots_and_links() {
+    let dir = std::env::temp_dir().join(format!("wordcraft-ui-same-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    let file = dir.join("a").join("x.docx");
+    std::fs::write(&file, "").unwrap();
+    std::os::unix::fs::symlink(dir.join("a"), dir.join("link")).unwrap();
+    assert!(super::same_file(&file, &dir.join("a").join("..").join("a").join("x.docx")));
+    assert!(super::same_file(&file, &dir.join("link").join("x.docx")));
+    assert!(!super::same_file(&file, &dir.join("a").join("y.docx")));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -590,8 +590,8 @@ fn open_recent_from(app: &mut WordApp, p: &str, home: Option<&std::path::Path>) 
     match app.open_file(&target, None) {
         Ok(v) if v.get("pending").is_some() => Ok(()),
         Ok(_) => {
-            // Opened, or already open and shown again.
-            app.pending_recent = None;
+            // Already the shown document: no switch ran `recent_opened`, so tidy the list here.
+            recent_opened(app);
             app.recent_error = None;
             app.ui.backstage = false;
             app.canvas.want_focus = true;
@@ -605,19 +605,38 @@ fn open_recent_from(app: &mut WordApp, p: &str, home: Option<&std::path::Path>) 
     }
 }
 
-/// A file has opened: if it is the Recent entry being opened, leave File for the editor and list
-/// the entry by its absolute path only, dropping the relative one it came from.
-pub(crate) fn recent_opened(app: &mut WordApp) {
-    let Some((entry, target)) = app.pending_recent.take() else { return };
-    let opened = std::path::absolute(&target).unwrap_or_else(|_| target.clone().into());
-    if app.session.path.as_deref() != Some(opened.as_path()) {
-        return;
-    }
+/// A file has opened: if it is the Recent entry being opened, close File in the window it was
+/// clicked in and list the entry by the document's absolute path only, dropping the relative
+/// spelling it came from. True when it was; the caller then focuses the editor once the window
+/// shows the document (switching documents resets the canvas).
+pub(crate) fn recent_opened(app: &mut WordApp) -> bool {
+    let Some((entry, target)) = app.pending_recent.take() else { return false };
+    let Some(opened) = app.session.path.clone().filter(|p| same_file(p, std::path::Path::new(&target))) else { return false };
     if entry != opened.to_string_lossy() {
         app.ui.recent.retain(|r| *r != entry);
     }
     app.ui.backstage = false;
-    app.canvas.want_focus = true;
+    true
+}
+
+/// Whether two paths name one file: the same absolute path, or the same file through a link or
+/// `..` (as `file.open` finds a file that is already open).
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let absolute = |p: &std::path::Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    if absolute(a) == absolute(b) {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        return a == b;
+    }
+    false
+}
+
+/// The password prompt for `path` was cancelled: if it was the Recent entry being opened, that
+/// open is over, with nothing to report.
+pub(crate) fn recent_cancelled(app: &mut WordApp, path: Option<&str>) {
+    app.pending_recent.take_if(|(_, target)| Some(target.as_str()) == path);
 }
 
 /// `file.open` of `path` failed for good: if it was the Recent entry being opened, File stays up
@@ -633,11 +652,13 @@ pub(crate) fn recent_failed(app: &mut WordApp, path: Option<&str>, error: &str) 
 
 /// Where a Recent entry is. Builds before `file.open` kept absolute paths recorded the path as
 /// typed, e.g. `Documenti/notes.docx` from `wordcraft Documenti/notes.docx` run in the home
-/// folder; started from anywhere else, that names nothing. A relative entry that isn't there is
-/// looked for in the home folder; otherwise the entry is used as it is.
+/// folder; started from anywhere else, that names nothing. A relative entry is looked for in
+/// the home folder first (where launchers start the app), so a file of the same name under
+/// the folder the app happens to run from isn't opened in its place; otherwise the entry is
+/// used as it is.
 fn resolve_recent(p: &str, home: Option<&std::path::Path>) -> String {
     let path = std::path::Path::new(p);
-    if path.is_absolute() || path.exists() {
+    if path.is_absolute() {
         return p.to_string();
     }
     match home.map(|h| h.join(path)).filter(|h| h.exists()) {
