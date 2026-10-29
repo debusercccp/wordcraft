@@ -116,6 +116,19 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             });
         });
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.ribbon).inner_margin(egui::Margin::symmetric(40, 30))).show(ui, |ui| {
+        // Why a Recent document didn't open, pinned under the page instead of in it: below a long
+        // list it scrolled out of sight, and above it the rows moved under the pointer. Here
+        // the rows keep their places; the page just shows a line less.
+        if matches!(app.ui.backstage_page.as_str(), "home" | "open")
+            && let Some(e) = app.recent_error.clone()
+        {
+            egui::Panel::bottom("backstage_recent_error")
+                .resizable(false)
+                .frame(egui::Frame::NONE.fill(t.ribbon).inner_margin(egui::Margin { left: 0, right: 0, top: 8, bottom: 0 }))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(e).color(t.red));
+                });
+        }
         egui::ScrollArea::vertical().show(ui, |ui| match app.ui.backstage_page.as_str() {
             "home" => home_page(app, ui),
             "new" => new_page(app, ui),
@@ -265,14 +278,10 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 18.0, r.center().y), vec2(22.0, 22.0)), "printLayout", t.icon, t.accent);
         ui.painter().text(pos2(r.min.x + 40.0, r.min.y + 13.0), Align2::LEFT_CENTER, &name, medium(13.0), t.text);
         ui.painter().text(pos2(r.min.x + 40.0, r.min.y + 29.0), Align2::LEFT_CENTER, &p, regular(11.0), t.text_dim);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
         if resp.clicked() {
             open_recent(app, &p);
         }
-    }
-    // Below the list, so the rows don't move under the pointer when it appears or goes.
-    if let Some(e) = &app.recent_error {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(e).color(t.red));
     }
 }
 
@@ -578,9 +587,7 @@ mod tests {
             a,
         );
         h.run_steps(4);
-        let shown = h.get_by_label(&err).rect();
-        let heading = h.get_by_label("Recent").rect();
-        assert!(shown.min.y >= heading.max.y + 40.0, "the reason shows below the list's row, so the rows don't move");
+        assert!(h.query_by_label(&err).is_some(), "the reason is shown");
 
         // One that opens leaves for the editor and clears the message.
         let path = std::env::temp_dir().join(format!("wordcraft-ui-recent-{}.docx", std::process::id()));
@@ -659,6 +666,32 @@ mod tests {
         assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Studio"));
         assert_eq!(a.ui.recent, vec![abs.clone(), "Other.docx".to_string()], "then the relative entry is replaced");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// With a long Recent list in a short window the reason is still on screen, and showing it
+    /// doesn't move the rows under the pointer.
+    #[test]
+    fn recent_error_stays_in_view_and_rows_keep_their_places() {
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+        a.ui.recent = (1..=12).map(|i| format!("no/such/folder/Doc{i}.docx")).collect();
+        a.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+        let (w, h_px) = (1000.0, 500.0);
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(w, h_px)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        h.run_steps(4);
+        let before = h.get_by_label("Doc1.docx").rect();
+        super::open_recent(h.state_mut(), "no/such/folder/Doc1.docx");
+        let err = h.state().recent_error.clone().unwrap();
+        h.run_steps(4);
+        assert_eq!(h.get_by_label("Doc1.docx").rect(), before, "the rows don't move");
+        let shown = h.get_by_label(&err).rect();
+        assert!(shown.max.y <= h_px && shown.min.y >= 0.0, "the reason is in the window: {shown:?}");
     }
 
     #[test]
