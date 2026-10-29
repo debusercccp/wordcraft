@@ -359,6 +359,9 @@ pub struct WordApp {
     /// Why the last Recent document clicked on File › Home or Open didn't open; shown above the
     /// list, where the status bar isn't.
     pub(crate) recent_error: Option<String>,
+    /// The Recent entry being opened and the path it resolved to, until that file opens: at once,
+    /// or after Save Changes or the password prompt (`backstage::open_recent`).
+    pub(crate) pending_recent: Option<(String, String)>,
     pub previews: previews::Previews,
     /// Media key of the picture a pending Change Picture replaces (#147).
     pub change_picture_target: Option<String>,
@@ -478,6 +481,7 @@ impl WordApp {
             restrict: Default::default(),
             status_msg: None,
             recent_error: None,
+            pending_recent: None,
             previews: previews::Previews::default(),
             integrated_titlebar: false,
             control_rx: None,
@@ -715,6 +719,7 @@ impl WordApp {
             // the stale "Couldn't open" shown above the Recent list.
             if id == "file.open" {
                 self.recent_error = None;
+                backstage::recent_opened(self);
             }
             if matches!(self.dialog, Some(dialogs::Dialog::SaveChanges { .. })) {
                 self.dialog = None;

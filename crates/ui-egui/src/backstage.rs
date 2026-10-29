@@ -289,16 +289,14 @@ fn open_recent(app: &mut WordApp, p: &str) {
 /// [`open_recent`], with relative entries also looked for in `home`.
 fn open_recent_from(app: &mut WordApp, p: &str, home: Option<&std::path::Path>) {
     let target = resolve_recent(p, home);
+    // Finished by `recent_opened` once the file has opened, which may be after Save Changes or
+    // the password prompt; until then the list and the entry stay as they are.
+    app.pending_recent = Some((p.to_string(), target.clone()));
     match app.run("file.open", json!({"path": target})) {
-        Ok(_) => {
-            // The entry is now listed by its absolute path; drop the relative one it came from.
-            if target != p {
-                app.ui.recent.retain(|r| r != p);
-            }
-            app.ui.backstage = false;
-            app.canvas.want_focus = true;
-        }
+        Ok(v) if v.get("pending").is_some() => {}
+        Ok(_) => app.pending_recent = None,
         Err(e) => {
+            app.pending_recent = None;
             log::warn!("{p}: {e}");
             let msg = tl!("Couldn't open {path}: {error}");
             // The engine's error already starts with the path; name it once.
@@ -306,6 +304,21 @@ fn open_recent_from(app: &mut WordApp, p: &str, home: Option<&std::path::Path>) 
             app.recent_error = Some(crate::i18n::fmt(msg, &[("path", p), ("error", e)]));
         }
     }
+}
+
+/// A file has opened: if it is the Recent entry being opened, leave File for the editor and list
+/// the entry by its absolute path only, dropping the relative one it came from.
+pub(crate) fn recent_opened(app: &mut WordApp) {
+    let Some((entry, target)) = app.pending_recent.take() else { return };
+    let opened = std::path::absolute(&target).unwrap_or_else(|_| target.clone().into());
+    if app.session.path.as_deref() != Some(opened.as_path()) {
+        return;
+    }
+    if entry != opened.to_string_lossy() {
+        app.ui.recent.retain(|r| *r != entry);
+    }
+    app.ui.backstage = false;
+    app.canvas.want_focus = true;
 }
 
 /// Where a Recent entry is. Builds before `file.open` kept absolute paths recorded the path as
@@ -612,6 +625,39 @@ mod tests {
         assert!(!a.ui.backstage && a.recent_error.is_none(), "it opened");
         assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Studio"));
         assert_eq!(a.ui.recent, vec![abs.clone(), "Other.docx".to_string()], "the relative entry is replaced by the absolute one");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// With unsaved changes the Recent open waits for Save Changes: the list, the entry and File
+    /// stay as they are until the file really opens, and Cancel leaves them so.
+    #[test]
+    fn recent_open_waits_for_save_changes() {
+        let home = std::env::temp_dir().join(format!("wordcraft-ui-home-wait-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("Docs")).unwrap();
+        let abs = home.join("Docs").join("Notes.docx").to_string_lossy().to_string();
+        let rel = "Docs/Notes.docx";
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+        a.run("file.new", json!({"template": "sample"})).unwrap();
+        a.run("file.save", json!({"path": abs})).unwrap();
+        a.run("file.new", json!({})).unwrap();
+        a.run("text.insert", json!({"text": "unsaved"})).unwrap();
+        assert!(a.session.dirty);
+        a.ui.recent = vec![rel.into(), "Other.docx".into()];
+        a.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+
+        super::open_recent_from(&mut a, rel, Some(&home));
+        assert!(matches!(a.dialog, Some(crate::dialogs::Dialog::SaveChanges { .. })), "Save Changes asks first");
+        assert!(a.ui.backstage, "File stays up while the prompt is open");
+        assert_eq!(a.ui.recent, vec![rel.to_string(), "Other.docx".to_string()], "the entry is untouched");
+        a.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
+        assert!(a.ui.backstage && a.session.path.is_none(), "cancelled: nothing opened");
+        assert_eq!(a.ui.recent[0], rel);
+
+        super::open_recent_from(&mut a, rel, Some(&home));
+        a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+        assert!(!a.ui.backstage, "the deferred open leaves File");
+        assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Studio"));
+        assert_eq!(a.ui.recent, vec![abs.clone(), "Other.docx".to_string()], "then the relative entry is replaced");
         let _ = std::fs::remove_dir_all(&home);
     }
 
