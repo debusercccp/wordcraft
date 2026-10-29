@@ -278,8 +278,22 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
 /// Open a Recent document. If it doesn't open, stay on the list and say why, instead of leaving
 /// for the blank document as if it had (a moved file, or a relative path from another folder).
 fn open_recent(app: &mut WordApp, p: &str) {
-    match app.run("file.open", json!({"path": p})) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let home = crate::file_browser::home();
+    #[cfg(target_arch = "wasm32")]
+    let home: Option<std::path::PathBuf> = None;
+    open_recent_from(app, p, home.as_deref());
+}
+
+/// [`open_recent`], with relative entries also looked for in `home`.
+fn open_recent_from(app: &mut WordApp, p: &str, home: Option<&std::path::Path>) {
+    let target = resolve_recent(p, home);
+    match app.run("file.open", json!({"path": target})) {
         Ok(_) => {
+            // The entry is now listed by its absolute path; drop the relative one it came from.
+            if target != p {
+                app.ui.recent.retain(|r| r != p);
+            }
             app.ui.backstage = false;
             app.canvas.want_focus = true;
         }
@@ -288,6 +302,21 @@ fn open_recent(app: &mut WordApp, p: &str) {
             let msg = tl!("Couldn't open {path}: {error}");
             app.recent_error = Some(crate::i18n::fmt(msg, &[("path", p), ("error", &e)]));
         }
+    }
+}
+
+/// Where a Recent entry is. Builds before `file.open` kept absolute paths recorded the path as
+/// typed, e.g. `Documenti/notes.docx` from `wordcraft Documenti/notes.docx` run in the home
+/// folder; started from anywhere else, that names nothing. A relative entry that isn't there is
+/// looked for in the home folder; otherwise the entry is used as it is.
+fn resolve_recent(p: &str, home: Option<&std::path::Path>) -> String {
+    let path = std::path::Path::new(p);
+    if path.is_absolute() || path.exists() {
+        return p.to_string();
+    }
+    match home.map(|h| h.join(path)).filter(|h| h.exists()) {
+        Some(found) => found.to_string_lossy().to_string(),
+        None => p.to_string(),
     }
 }
 
@@ -551,6 +580,34 @@ mod tests {
         assert!(a.recent_error.is_none(), "any successful open clears the stale message");
         assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Studio"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Recent entries recorded relative to the home folder (older builds, `wordcraft Documenti/…`
+    /// run in `~`) open from anywhere, and are then listed by their absolute path only.
+    #[test]
+    fn relative_recent_entries_are_found_in_the_home_folder() {
+        let home = std::env::temp_dir().join(format!("wordcraft-ui-home-{}", std::process::id()));
+        let dir = home.join("Documenti").join("MCB");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Notes.docx");
+        let rel = "Documenti/MCB/Notes.docx";
+        let abs = file.to_string_lossy().to_string();
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+        a.run("file.new", json!({"template": "sample"})).unwrap();
+        a.run("file.save", json!({"path": abs})).unwrap();
+        assert_eq!(super::resolve_recent(rel, Some(&home)), abs);
+        assert_eq!(super::resolve_recent("Documenti/MCB/Missing.docx", Some(&home)), "Documenti/MCB/Missing.docx", "nothing there: as it was");
+        assert_eq!(super::resolve_recent(rel, None), rel);
+        assert_eq!(super::resolve_recent(&abs, Some(std::path::Path::new("/elsewhere"))), abs, "absolute entries are left alone");
+
+        a.ui.recent = vec!["Other.docx".into(), rel.into()];
+        a.run("file.new", json!({})).unwrap();
+        a.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+        super::open_recent_from(&mut a, rel, Some(&home));
+        assert!(!a.ui.backstage && a.recent_error.is_none(), "it opened");
+        assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Studio"));
+        assert_eq!(a.ui.recent, vec![abs.clone(), "Other.docx".to_string()], "the relative entry is replaced by the absolute one");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
