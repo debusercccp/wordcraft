@@ -157,7 +157,7 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
     // Absolute, so Save and the Recent list still find the file after the working directory
     // changes (a relative path in Recent opened nothing when the app was started elsewhere).
     // Bytes sent with `data` only name the file.
-    s.path = Some(if v.get("data").is_some() { path.into() } else { std::path::absolute(path).unwrap_or_else(|_| path.into()) });
+    s.path = Some(if p::str(v, "data").is_some() { path.into() } else { std::path::absolute(path).unwrap_or_else(|_| path.into()) });
     // Like Word, a document opened with a password is saved with it again.
     if encrypted {
         s.password = password.map(crate::io::Password::new);

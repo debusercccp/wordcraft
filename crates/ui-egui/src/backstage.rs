@@ -280,7 +280,6 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
 fn open_recent(app: &mut WordApp, p: &str) {
     match app.run("file.open", json!({"path": p})) {
         Ok(_) => {
-            app.recent_error = None;
             app.ui.backstage = false;
             app.canvas.want_focus = true;
         }
@@ -540,10 +539,16 @@ mod tests {
         let path = std::env::temp_dir().join(format!("wordcraft-ui-recent-{}.docx", std::process::id()));
         let a = h.state_mut();
         a.run("file.new", json!({"template": "sample"})).unwrap();
+        assert!(a.recent_error.is_some(), "a new document leaves the message alone");
         a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
         a.run("ui.backstage", json!({"value": true, "page": "open"})).unwrap();
         super::open_recent(a, &path.to_string_lossy());
         assert!(!a.ui.backstage && a.recent_error.is_none());
+        // Opening by another route (Browse, an agent) clears it too.
+        super::open_recent(a, missing);
+        assert!(a.recent_error.is_some());
+        a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(a.recent_error.is_none(), "any successful open clears the stale message");
         assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Studio"));
         let _ = std::fs::remove_file(&path);
     }

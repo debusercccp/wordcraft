@@ -3332,6 +3332,13 @@ fn opening_a_relative_path_remembers_the_absolute_one() {
     assert!(path.is_absolute(), "{path:?}");
     assert_eq!(path, std::env::current_dir().unwrap().join(&name));
     assert!(a.doc.plain_text(StoryRef::Body).contains("Relative hello"));
+    // `"data": null` sends no bytes: the file is read from disk, so its path is absolute too.
+    std::fs::write(&name, "Relative hello").unwrap();
+    let r = a.run("file.open", &json!({"path": name, "data": null}));
+    let path = a.path.clone();
+    let _ = std::fs::remove_file(&name);
+    r.unwrap();
+    assert!(path.is_some_and(|p| p.is_absolute()));
 }
 
 /// Encrypt with Password (#55): a document saved with a password opens only with it, keeps it

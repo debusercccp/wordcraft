@@ -711,6 +711,11 @@ impl WordApp {
         // "Save changes?" and AutoSave's go-ahead were both about the old one.
         if self.session.document_id() != document {
             self.autosave_path = None;
+            // A file opened by any route (Browse, the built-in browser, Recent, an agent) clears
+            // the stale "Couldn't open" shown above the Recent list.
+            if id == "file.open" {
+                self.recent_error = None;
+            }
             if matches!(self.dialog, Some(dialogs::Dialog::SaveChanges { .. })) {
                 self.dialog = None;
             }
