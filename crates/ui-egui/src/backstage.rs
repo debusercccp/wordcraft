@@ -256,10 +256,6 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
     if app.ui.recent.is_empty() {
         ui.label(egui::RichText::new(tl!("Documents you open will show up here.")).color(t.text_dim));
     }
-    if let Some(e) = &app.recent_error {
-        ui.label(egui::RichText::new(e).color(t.red));
-        ui.add_space(4.0);
-    }
     for p in app.ui.recent.iter().take(app.ui.recent_shown()).cloned().collect::<Vec<_>>() {
         let name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p.clone());
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 40.0), Sense::click());
@@ -272,6 +268,11 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
         if resp.clicked() {
             open_recent(app, &p);
         }
+    }
+    // Below the list, so the rows don't move under the pointer when it appears or goes.
+    if let Some(e) = &app.recent_error {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(e).color(t.red));
     }
 }
 
@@ -300,7 +301,9 @@ fn open_recent_from(app: &mut WordApp, p: &str, home: Option<&std::path::Path>) 
         Err(e) => {
             log::warn!("{p}: {e}");
             let msg = tl!("Couldn't open {path}: {error}");
-            app.recent_error = Some(crate::i18n::fmt(msg, &[("path", p), ("error", &e)]));
+            // The engine's error already starts with the path; name it once.
+            let e = e.strip_prefix(&format!("{target}: ")).unwrap_or(&e);
+            app.recent_error = Some(crate::i18n::fmt(msg, &[("path", p), ("error", e)]));
         }
     }
 }
@@ -552,7 +555,7 @@ mod tests {
         super::open_recent(&mut a, missing);
         assert!(a.ui.backstage, "still on File › Home");
         let err = a.recent_error.clone().unwrap();
-        assert!(err.contains(missing), "{err}");
+        assert_eq!(err.matches(missing).count(), 1, "the path is named once: {err}");
         let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
             |ui, app: &mut WordApp| {
                 let ctx = ui.ctx().clone();
@@ -562,7 +565,9 @@ mod tests {
             a,
         );
         h.run_steps(4);
-        assert!(h.query_by_label(&err).is_some(), "the reason shows above the list");
+        let shown = h.get_by_label(&err).rect();
+        let heading = h.get_by_label("Recent").rect();
+        assert!(shown.min.y >= heading.max.y + 40.0, "the reason shows below the list's row, so the rows don't move");
 
         // One that opens leaves for the editor and clears the message.
         let path = std::env::temp_dir().join(format!("wordcraft-ui-recent-{}.docx", std::process::id()));
